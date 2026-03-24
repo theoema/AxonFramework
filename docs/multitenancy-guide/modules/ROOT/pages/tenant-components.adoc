@@ -1,0 +1,274 @@
+= Tenant-Scoped Components
+:navtitle: Tenant components
+
+In a multi-tenant application, different tenants often need different configurations for the same service.
+One tenant might use a specific payment gateway, another might have different pricing rules, and a third might connect to a separate external API.
+The `TenantComponentFactory` lets you create per-tenant instances of any component and inject them into message handlers automatically.
+
+== When to use tenant components
+
+The multi-tenancy extension already handles infrastructure isolation (buses, event stores, processors) transparently.
+Tenant components are for your _application-level_ dependencies that vary per tenant:
+
+* **External integrations** that differ per tenant (payment providers, notification channels, API clients)
+* **Configuration objects** with tenant-specific settings (pricing rules, feature flags, rate limits)
+* **Data access** when each tenant has its own database (see <<data-access-patterns>>)
+
+== Registering a component factory
+
+Consider a SaaS platform where each tenant sends emails from their own domain with their own SMTP server.
+The SMTP host is stored as a xref:getting-started.adoc[tenant property]:
+
+[source,java]
+----
+new SimpleTenantProvider(List.of(
+        new TenantDescriptor("acme", Map.of("smtpHost", "smtp.acme.com")),
+        new TenantDescriptor("globex", Map.of("smtpHost", "mail.globex.org"))
+));
+----
+
+Register a `TenantComponentFactory` that creates a per-tenant email sender using that property:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+import org.axonframework.extension.multitenancy.common.TenantComponentFactory;
+
+class MultiTenancyConfig {
+
+    void configureTenantComponents(EventSourcingConfigurer configurer) {
+        configurer.componentRegistry(cr ->
+                cr.registerComponent(TenantComponentFactory.class,
+                        config -> (TenantComponentFactory<EmailSender>) tenant ->
+                                new EmailSender(tenant.properties().get("smtpHost")))
+        );
+    }
+}
+----
+--
+
+Spring Boot::
++
+--
+Declare the factory as a bean.
+The framework discovers it automatically and registers it for injection:
+
+[source,java]
+----
+@Bean
+TenantComponentFactory<EmailSender> emailSenderFactory() {
+    return tenant -> new EmailSender(tenant.properties().get("smtpHost"));
+}
+----
+--
+====
+
+Each tenant gets its own `EmailSender` configured with that tenant's SMTP server, created lazily on first use and cached for the lifetime of the tenant.
+
+== Injecting into handlers
+
+Once registered, tenant components are injected as handler parameters.
+The framework resolves the current tenant from the message and provides the correct instance:
+
+[source,java]
+----
+@EventHandler
+void on(OrderShippedEvent event, EmailSender email) {
+    // sends from this tenant's SMTP server
+    email.send(event.customerEmail(), "Your order has shipped!");
+}
+----
+
+This works in command handlers, event handlers, and query handlers.
+The component is resolved from the same tenant context as the message being processed.
+
+You can also inject the `TenantDescriptor` itself to access the tenant's identity and properties directly:
+
+[source,java]
+----
+@EventHandler
+void on(OrderPlacedEvent event, TenantDescriptor tenant) {
+    log.info("Order placed for tenant {} (region: {})",
+             tenant.tenantId(), tenant.properties().get("region"));
+}
+----
+
+This is useful when you need tenant information without registering a dedicated tenant component.
+
+[IMPORTANT]
+====
+Tenant components can only be injected as **handler method parameters**, not as constructor or field-level dependencies.
+The correct tenant is determined at message handling time from the current message's metadata, so it cannot be known when the class is instantiated.
+
+[source,java]
+----
+// This will NOT work - there is no message context at construction time
+class OrderProjection {
+    private final EmailSender email; // which tenant's sender?
+
+    OrderProjection(EmailSender email) { // cannot resolve here
+        this.email = email;
+    }
+}
+
+// Instead, inject per handler invocation
+class OrderProjection {
+    @EventHandler
+    void on(OrderShippedEvent event, EmailSender email) { // resolved from the event's tenant
+        email.send(event.customerEmail(), "Your order has shipped!");
+    }
+}
+----
+====
+
+[[data-access-patterns]]
+== Data access patterns
+
+Each tenant typically has its own database or schema, so repositories need to talk to the right database for the current tenant.
+The examples below use Spring Data JPA and Spring's `JdbcTemplate`, but the same principles apply to any data access technology.
+The key idea is the same: register a tenant component factory for the base type and let the framework resolve tenant-specific instances.
+
+=== Example: Spring Data JPA with per-tenant repositories
+
+When you register a `TenantComponentFactory` for a base type, the framework automatically resolves handler parameters that are subtypes of that type.
+This means a single factory registered for `Repository` can serve _every_ Spring Data repository interface in your application.
+
+The factory's `create(TenantDescriptor, Class)` method receives the specific subtype being requested, so it knows which repository to create:
+
+[source,java]
+----
+@Bean
+TenantComponentFactory<Repository> tenantRepositories() {
+    var emfCache = new ConcurrentHashMap<String, EntityManagerFactory>();
+
+    return new TenantComponentFactory<>() {
+        @Override
+        public Repository create(TenantDescriptor tenant) {
+            throw new UnsupportedOperationException("Use typed create");
+        }
+
+        @Override
+        public <S extends Repository> S create(TenantDescriptor tenant, Class<S> type) {
+            var emf = emfCache.computeIfAbsent(tenant.tenantId(), id -> {
+                var builder = new LocalContainerEntityManagerFactoryBean();
+                builder.setDataSource(getDataSourceForTenant(tenant));
+                builder.setPackagesToScan("com.example.domain");
+                builder.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
+                builder.afterPropertiesSet();
+                return builder.getObject();
+            });
+            var em = SharedEntityManagerCreator.createSharedEntityManager(emf);
+            return new JpaRepositoryFactory(em).getRepository(type);
+        }
+    };
+}
+----
+
+Define your repositories as standard Spring Data interfaces:
+
+[source,java]
+----
+public interface OrderRepository extends JpaRepository<OrderEntity, String> {
+    List<OrderEntity> findByCustomerId(String customerId);
+}
+----
+
+And inject them directly into handlers:
+
+[source,java]
+----
+@EventHandler
+void on(OrderPlacedEvent event, OrderRepository orders) {
+    orders.save(new OrderEntity(event.orderId(), event.name()));
+}
+----
+
+No scanning, no per-repository registration.
+The framework sees that `OrderRepository` is a subtype of `Repository`, finds the factory, and calls `create(tenant, OrderRepository.class)`.
+
+[WARNING]
+====
+An `EntityManagerFactory` is a heavyweight object on the JVM.
+Each instance maintains connection pools, second-level caches, and entity metadata.
+For applications with a small number of tenants this approach works well, but for large tenant counts (hundreds or thousands) the memory and startup cost becomes significant.
+For high-tenant-count or performance intensive applications, consider a more lightweight approach like the JDBC one below.
+====
+
+=== Example: Spring JDBC with per-tenant JdbcTemplate
+
+A lighter alternative is to register a per-tenant `JdbcTemplate` as a tenant component and inject it directly into handlers:
+
+[source,java]
+----
+@Bean
+TenantComponentFactory<JdbcTemplate> jdbcTemplateFactory() {
+    return tenant -> new JdbcTemplate(getDataSourceForTenant(tenant));
+}
+----
+
+Handlers inject the tenant-scoped `JdbcTemplate` and use it directly, or through a repository abstraction of your choice:
+
+[tabs]
+====
+Using JdbcTemplate directly::
++
+--
+[source,java]
+----
+@EventHandler
+void on(OrderPlacedEvent event, JdbcTemplate jdbc) {
+    jdbc.update(
+            "INSERT INTO orders (id, name, status) VALUES (?, ?, ?)",
+            event.orderId(), event.name(), "PLACED"
+    );
+}
+
+@QueryHandler
+Optional<Order> handle(FindOrderQuery query, JdbcTemplate jdbc) {
+    return Optional.ofNullable(jdbc.queryForObject(
+            "SELECT * FROM orders WHERE id = ?",
+            (rs, rowNum) -> new Order(rs.getString("id"), rs.getString("name"), rs.getString("status")),
+            query.orderId()
+    ));
+}
+----
+--
+
+With a static repository class::
++
+--
+[source,java]
+----
+class OrderRepository {
+
+    static void save(JdbcTemplate jdbc, Order order) {
+        jdbc.update(
+                "INSERT INTO orders (id, name, status) VALUES (?, ?, ?)",
+                order.id(), order.name(), order.status()
+        );
+    }
+
+    static Optional<Order> findById(JdbcTemplate jdbc, String id) {
+        return Optional.ofNullable(jdbc.queryForObject(
+                "SELECT * FROM orders WHERE id = ?",
+                (rs, rowNum) -> new Order(rs.getString("id"), rs.getString("name"), rs.getString("status")),
+                id
+        ));
+    }
+}
+
+// In handlers:
+@EventHandler
+void on(OrderPlacedEvent event, JdbcTemplate jdbc) {
+    OrderRepository.save(jdbc, new Order(event.orderId(), event.name(), "PLACED"));
+}
+----
+--
+====
+
+This approach scales well to large tenant counts since `JdbcTemplate` is a lightweight wrapper around a `DataSource` with no significant per-instance overhead.
+

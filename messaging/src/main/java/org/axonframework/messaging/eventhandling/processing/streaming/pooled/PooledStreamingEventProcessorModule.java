@@ -22,6 +22,7 @@ import org.axonframework.common.configuration.BaseModule;
 import org.axonframework.common.configuration.ComponentBuilder;
 import org.axonframework.common.configuration.ComponentDefinition;
 import org.axonframework.common.configuration.Configuration;
+import org.axonframework.common.configuration.LifecycleRegistry;
 import org.axonframework.common.configuration.ModuleBuilder;
 import org.axonframework.messaging.eventhandling.EventHandlingComponent;
 import org.axonframework.messaging.eventhandling.EventMessage;
@@ -100,197 +101,25 @@ public class PooledStreamingEventProcessorModule extends BaseModule<PooledStream
 
     @Override
     public PooledStreamingEventProcessorModule build() {
-        registerCustomizedConfiguration();
-        registerDeadLetterQueues();
-        registerTokenStore();
-        registerUnitOfWorkFactory();
-        registerEventHandlingComponents();
-        registerEventProcessor();
+        // Infrastructure creation is deferred to build(Configuration, LifecycleRegistry)
+        // where the parent configuration is available for factory lookup.
         return this;
     }
 
-    private void registerCustomizedConfiguration() {
-        componentRegistry(cr -> cr.registerComponent(
-                ComponentDefinition
-                        .ofType(PooledStreamingEventProcessorConfiguration.class)
-                        .withBuilder(cfg -> {
-                            var configuration = customizedProcessorConfigurationBuilder.build(cfg);
-                            configuration.workerExecutor(
-                                    Optional.ofNullable(configuration.workerExecutor())
-                                            .orElseGet(() -> defaultExecutor(4, "WorkPackage[" + processorName + "]"))
-                            );
-                            configuration.coordinatorExecutor(
-                                    Optional.ofNullable(configuration.coordinatorExecutor())
-                                            .orElseGet(() -> defaultExecutor(1, "Coordinator[" + processorName + "]"))
-                            );
-                            var dlqConfig = configuration.deadLetterQueue();
-                            if (dlqConfig.isEnabled() && dlqConfig.cacheMaxSize() > 0) {
-                                configuration.addSegmentChangeListener(SegmentChangeListener.onRelease(segment -> {
-                                    var uow = configuration.unitOfWorkFactory().create();
-                                    return uow.executeWithResult(context -> {
-                                        // Invalidate cache for ALL event handling component DLQs
-                                        for (String componentName : eventHandlingComponentBuilders.keySet()) {
-                                            var dlq = (CachingSequencedDeadLetterQueue<?>) cfg.getComponent(
-                                                    SequencedDeadLetterQueue.class,
-                                                    processorComponentDlqName(componentName));
-                                            dlq.invalidateCache(context.withResource(Segment.RESOURCE_KEY, segment));
-                                        }
-                                        return FutureUtils.emptyCompletedFuture();
-                                    });
-                                }));
-                            }
-                            return configuration;
-                        }).onShutdown(Phase.LOCAL_MESSAGE_HANDLER_REGISTRATIONS, (cfg, processor) -> {
-                            processor.workerExecutor().shutdown();
-                            return FutureUtils.emptyCompletedFuture();
-                        }).onShutdown(Phase.LOCAL_MESSAGE_HANDLER_REGISTRATIONS, (cfg, processor) -> {
-                            processor.coordinatorExecutor().shutdown();
-                            return FutureUtils.emptyCompletedFuture();
-                        })
+    @Override
+    public Configuration build(Configuration parent, LifecycleRegistry lifecycleRegistry) {
+        // Look up the factory from the parent configuration, fall back to default
+        var factory = parent.getOptionalComponent(PooledStreamingProcessorInfrastructureFactory.class)
+                            .orElseGet(DefaultPooledStreamingProcessorInfrastructureFactory::new);
+
+        componentRegistry(cr -> factory.createInfrastructure(
+                processorName,
+                eventHandlingComponentBuilders,
+                customizedProcessorConfigurationBuilder,
+                cr
         ));
-    }
 
-    @SuppressWarnings("unchecked")
-    private void registerDeadLetterQueues() {
-        for (String componentName : eventHandlingComponentBuilders.keySet()) {
-            var dlqName = processorComponentDlqName(componentName);
-            componentRegistry(cr -> cr.registerComponent(
-                    ComponentDefinition
-                            .ofTypeAndName(SequencedDeadLetterQueue.class, dlqName)
-                            .withBuilder(cfg -> {
-                                DeadLetterQueueConfiguration dlqConfig =
-                                        cfg.getComponent(PooledStreamingEventProcessorConfiguration.class)
-                                           .deadLetterQueue();
-                                if (dlqConfig.isEnabled()) {
-                                    var underlyingDlq = dlqConfig.factory().create(dlqName, cfg);
-                                    if (dlqConfig.cacheMaxSize() > 0) {
-                                        return new CachingSequencedDeadLetterQueue<EventMessage>(
-                                                underlyingDlq,
-                                                dlqConfig.cacheMaxSize()
-                                        );
-                                    }
-                                    return underlyingDlq;
-                                }
-                                return null;
-                            })
-            ));
-        }
-    }
-
-    private void registerTokenStore() {
-        componentRegistry(cr -> cr.registerComponent(
-                ComponentDefinition
-                        .ofTypeAndName(TokenStore.class, "TokenStore[" + processorName + "]")
-                        .withBuilder(cfg -> cfg.getComponent(PooledStreamingEventProcessorConfiguration.class)
-                                               .tokenStore())
-        ));
-    }
-
-    private void registerUnitOfWorkFactory() {
-        componentRegistry(cr -> cr.registerComponent(
-                ComponentDefinition
-                        .ofTypeAndName(UnitOfWorkFactory.class, "UnitOfWorkFactory[" + processorName + "]")
-                        .withBuilder(cfg -> cfg.getComponent(PooledStreamingEventProcessorConfiguration.class)
-                                               .unitOfWorkFactory())
-        ));
-    }
-
-    private void registerEventProcessor() {
-        var processorComponentDefinition = ComponentDefinition
-                .ofTypeAndName(StreamingEventProcessor.class, processorName)
-                .withBuilder(cfg -> new PooledStreamingEventProcessor(
-                        processorName,
-                        getEventHandlingComponents(cfg),
-                        cfg.getComponent(PooledStreamingEventProcessorConfiguration.class)
-                ))
-                .onStart(Phase.INBOUND_EVENT_CONNECTORS, (cfg, component) -> {
-                    return component.start();
-                })
-                .onShutdown(Phase.INBOUND_EVENT_CONNECTORS, (cfg, component) -> {
-                    return component.shutdown();
-                });
-
-        componentRegistry(cr -> cr.registerComponent(processorComponentDefinition));
-    }
-
-    private void registerEventHandlingComponents() {
-        for (var componentBuilderEntry : eventHandlingComponentBuilders.entrySet()) {
-            var configuredComponentName = componentBuilderEntry.getKey();
-            var componentBuilder = componentBuilderEntry.getValue();
-            var componentName = processorEventHandlingComponentName(configuredComponentName);
-            componentRegistry(cr -> {
-                cr.registerComponent(EventHandlingComponent.class, componentName,
-                                     cfg -> {
-                                         var component = componentBuilder.build(cfg);
-                                         return new SequenceCachingEventHandlingComponent(component);
-                                     });
-                cr.registerDecorator(EventHandlingComponent.class, componentName,
-                                     InterceptingEventHandlingComponent.DECORATION_ORDER,
-                                     (config, name, delegate) -> {
-                                         var configuration =
-                                                 config.getComponent(PooledStreamingEventProcessorConfiguration.class);
-                                         return new InterceptingEventHandlingComponent(
-                                                 configuration.interceptors(),
-                                                 delegate
-                                         );
-                                     });
-                cr.registerDecorator(EventHandlingComponent.class, componentName,
-                                     DeadLetteringEventHandlingComponent.DECORATION_ORDER,
-                                     (config, name, delegate) -> {
-                                         var processorConfig = config.getComponent(PooledStreamingEventProcessorConfiguration.class);
-                                         var dlqConfig = processorConfig.deadLetterQueue();
-                                         // Check if DLQ is enabled first
-                                         if (!dlqConfig.isEnabled()) {
-                                             return delegate;
-                                         }
-                                         // When DLQ is enabled, the component is required (not optional)
-                                         var dlq = config.getComponent(
-                                                 SequencedDeadLetterQueue.class,
-                                                 processorComponentDlqName(configuredComponentName)
-                                         );
-                                         //noinspection unchecked
-                                         return new DeadLetteringEventHandlingComponent(
-                                                 delegate,
-                                                 dlq,
-                                                 dlqConfig.enqueuePolicy(),
-                                                 processorConfig.unitOfWorkFactory(), dlqConfig.clearOnReset()
-                                         );
-                                     });
-                // Register the decorated component also as SequencedDeadLetterProcessor when DLQ is enabled
-                cr.registerComponent(SequencedDeadLetterProcessor.class, componentName,
-                                     cfg -> {
-                                         var eventHandlingComponent = cfg.getComponent(
-                                                 EventHandlingComponent.class, componentName
-                                         );
-                                         if (eventHandlingComponent instanceof SequencedDeadLetterProcessor<?> dlp) {
-                                             return dlp;
-                                         }
-                                         return null;
-                                     });
-            });
-        }
-    }
-
-    private List<EventHandlingComponent> getEventHandlingComponents(Configuration configuration) {
-        return eventHandlingComponentBuilders.keySet()
-                        .stream()
-                        .map(componentName -> configuration.getComponent(
-                                EventHandlingComponent.class,
-                                processorEventHandlingComponentName(componentName)
-                        ))
-                        .toList();
-    }
-
-    private String processorEventHandlingComponentName(String componentName) {
-        return "EventHandlingComponent[" + processorName + "][" + componentName + "]";
-    }
-
-    private String processorComponentDlqName(String componentName) {
-        return "DeadLetterQueue[" + processorName + "][" + componentName + "]";
-    }
-
-    private static ScheduledExecutorService defaultExecutor(int poolSize, String factoryName) {
-        return Executors.newScheduledThreadPool(poolSize, new AxonThreadFactory(factoryName));
+        return super.build(parent, lifecycleRegistry);
     }
 
     @Override

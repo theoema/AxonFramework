@@ -38,3 +38,4 @@ org.axonframework.extension.springboot.autoconfig.ObjectMapperAutoConfiguration
 org.axonframework.extension.springboot.autoconfig.ReactorAutoConfiguration
 org.axonframework.extension.springboot.autoconfig.SecurityAutoConfiguration
 org.axonframework.extension.springboot.autoconfig.UpdateCheckerAutoConfiguration
+org.axonframework.extension.springboot.autoconfig.multitenancy.MultiTenancyAutoConfiguration

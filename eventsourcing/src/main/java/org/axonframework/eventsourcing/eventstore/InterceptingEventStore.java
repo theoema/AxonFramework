@@ -99,6 +99,7 @@ public class InterceptingEventStore implements EventStore {
         this.delegateBus = new InterceptingEventBus(delegate, interceptors);
     }
 
+
     @Override
     public EventStoreTransaction transaction(ProcessingContext processingContext) {
         // Set the delegate transaction to ensure the InterceptingAppender can reach the correct EventStoreTransaction.

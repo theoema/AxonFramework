@@ -66,7 +66,7 @@ public class PooledStreamingEventProcessorsConfigurer {
     private final EventProcessingConfigurer parent;
 
     private PooledStreamingEventProcessorModule.Customization processorsDefaultCustomization = PooledStreamingEventProcessorModule.Customization.noOp();
-    private final List<ModuleBuilder<PooledStreamingEventProcessorModule>> moduleBuilders = new ArrayList<>();
+    private final List<ModuleBuilder<? extends EventProcessorModule>> moduleBuilders = new ArrayList<>();
 
     /**
      * Constructs a new pooled streaming event processors configurer.
@@ -198,7 +198,7 @@ public class PooledStreamingEventProcessorsConfigurer {
      * @return This module instance for method chaining.
      */
         public PooledStreamingEventProcessorsConfigurer processor(
-            ModuleBuilder<PooledStreamingEventProcessorModule> moduleBuilder
+            ModuleBuilder<? extends EventProcessorModule> moduleBuilder
     ) {
         Objects.requireNonNull(moduleBuilder, "moduleBuilder may not be null");
         moduleBuilders.add(moduleBuilder);
