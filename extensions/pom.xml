@@ -38,5 +38,6 @@
         <module>metrics</module>
         <module>tracing</module>
         <module>reactor</module>
+        <module>multitenancy</module>
     </modules>
 </project>

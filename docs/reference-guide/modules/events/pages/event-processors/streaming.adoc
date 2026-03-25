@@ -54,6 +54,13 @@ The processor supports all core streaming operations including <<replaying-event
 [[configuring]]
 == Configuring
 
+[TIP]
+.Multi-tenant applications
+====
+For multi-tenant applications, see the xref:multitenancy-guide::event-processors.adoc[Multi-Tenancy event processors guide].
+The multi-tenancy extension creates per-tenant `PooledStreamingEventProcessor` instances, each with its own event source, token store, and thread pools.
+====
+
 The Pooled Streaming Event Processor has several additional components that you can configure, next to the xref:event-processors/index.adoc#general_processor_configuration[base options].
 For other features that are configurable, we refer to their respective sections for more details.
 This section covers how to configure the basics of a Pooled Streaming Event Processor.

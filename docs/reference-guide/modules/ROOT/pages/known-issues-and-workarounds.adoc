@@ -59,7 +59,7 @@ The xref:axon-framework-reference:tuning:rdbms-tuning.adoc[Relational Database T
 
 As described earlier, the `@GeneratedValue` was introduced in 2016.
 With the recent move to Hibernate 6, which defaults the increment value to 50, the problem of gaps or unintended reuse between tables has only become bigger.
-Especially when combining this with Axon's xref:multitenancy-extension-reference::index.adoc[multitenancy] extension, the new default behavior of Hibernate 6 might cause uniqueness issues in this way.
+Especially when combining this with Axon's xref:multitenancy-guide::index.adoc[multitenancy] extension, the new default behavior of Hibernate 6 might cause uniqueness issues in this way.
 
 Hence, given the history on the subject, and the Axon-team having explained this predicament more frequent than they can count, we intend to address the sequence generation behavior in Axon Framework 5.
 

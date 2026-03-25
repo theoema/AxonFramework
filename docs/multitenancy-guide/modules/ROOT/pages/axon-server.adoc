@@ -1,0 +1,77 @@
+= Axon Server Integration
+:navtitle: Axon Server
+
+When using Axon Server, each Axon Server context can map to a tenant.
+The `axon-multitenancy-axon-server` module discovers tenants from the server and subscribes to context changes, so tenants can be added or removed at runtime without restarting your application.
+
+== Add the dependency
+
+[tabs]
+====
+Maven::
++
+--
+[source,xml]
+----
+<dependency>
+    <groupId>org.axonframework.extensions.multitenancy</groupId>
+    <artifactId>axon-multitenancy-axon-server</artifactId>
+    <version>${axon.version}</version>
+</dependency>
+----
+--
+
+Gradle::
++
+--
+[source,groovy]
+----
+implementation 'org.axonframework.extensions.multitenancy:axon-multitenancy-axon-server:${axonVersion}'
+----
+--
+====
+
+== What happens automatically
+
+When this module is on the classpath, the following is registered for you automatically:
+
+* An `AxonServerTenantProvider` that discovers tenants from Axon Server contexts and subscribes to context updates
+* Axon Server-backed segment factories for command bus, query bus, and event store
+
+This means you do not need to register a `TenantProvider` or `SimpleTenantProvider` yourself.
+The `AxonServerTenantProvider` replaces it.
+
+You still need to provide:
+
+* A `TenantResolver` (see xref:getting-started.adoc[])
+* A persistent token store for event processors (see xref:event-processors.adoc#_token_stores[Token stores])
+* Correlation data propagation for `tenantId` (see xref:getting-started.adoc[])
+
+== Filtering contexts
+
+Not every Axon Server context should be a tenant.
+By default, all contexts are included (except `_admin`).
+To filter which contexts become tenants, register a `TenantConnectPredicate`:
+
+[source,java]
+----
+// Only include contexts starting with "tenant-"
+@Bean
+TenantConnectPredicate tenantConnectPredicate() {
+    return tenant -> tenant.tenantId().startsWith("tenant-");
+}
+----
+
+== Tenant properties from context metadata
+
+When using Axon Server, the metadata configured on each Axon Server context is automatically mapped to `TenantDescriptor` properties.
+This means you can set key-value metadata on contexts via the Axon Server dashboard or Admin API, and it becomes available through `tenant.properties()` in your application.
+
+The replication group name is also included automatically under the key `replicationGroup`.
+
+== Dynamic tenant lifecycle
+
+When Axon Server reports a new context, all multi-tenant components automatically create segments for it.
+A new event processor starts reading from the beginning of the new tenant's event stream.
+
+When a context is removed, segments are shut down and any xref:tenant-components.adoc[tenant-scoped components] have their `destroy()` method called.

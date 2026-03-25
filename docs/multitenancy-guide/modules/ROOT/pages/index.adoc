@@ -1,0 +1,77 @@
+= Overview
+:navtitle: Overview
+
+Multi-tenancy allows a single Axon Framework deployment to serve multiple tenants with fully isolated data and infrastructure.
+Each tenant operates as if it has its own application: commands, events, queries, and projections are all scoped to the tenant that owns them.
+
+This is useful in SaaS applications, platforms serving multiple organizations, or any system where data from different clients must be kept strictly separate while sharing the same codebase and deployment.
+
+== How multi-tenancy works
+
+The extension replaces standard Axon infrastructure components with multi-tenant variants that maintain per-tenant segments.
+When a message enters the system, the framework determines which tenant it belongs to and routes it to that tenant's dedicated infrastructure.
+
+Each tenant gets its own:
+
+* **Command bus** and **query bus** for isolated message routing
+* **Event store** for persisting and streaming events
+* **Snapshot store** for entity snapshots
+* **Event processors** with dedicated threads, token stores, and event streams
+
+Your application code, event handlers, and command handlers remain unchanged.
+The routing happens transparently based on a resolver you provide.
+
+== What you need to set up
+
+A multi-tenant Axon application requires the following:
+
+xref:getting-started.adoc[**Tenant provider**]::
+Tells the framework which tenants exist.
+For a fixed set of tenants, use `SimpleTenantProvider`.
+For dynamic environments, xref:axon-server.adoc[`AxonServerTenantProvider`] discovers tenants from Axon Server contexts at runtime.
+
+xref:getting-started.adoc[**Target tenant resolver**]::
+Determines which tenant a message belongs to.
+This can use any strategy: reading from message metadata, inspecting the payload, or any custom logic.
+
+xref:getting-started.adoc[**Correlation data propagation**]::
+Ensures the tenant identifier flows from commands to the events they produce.
+Without this, events cannot be routed to the correct tenant's event store.
+
+xref:event-processors.adoc[**Multi-tenant event processors**]::
+Each tenant needs its own event processor with a dedicated event stream and token store.
+In Spring Boot this is automatic; with the Configuration API you register `MultiTenantEventProcessorModule` explicitly.
+
+With the first two components in place, the framework automatically replaces standard buses and stores with multi-tenant variants.
+Without them, the extension has no effect and your application runs as a normal single-tenant setup.
+
+== Modules
+
+The extension consists of two modules:
+
+`axon-multitenancy`::
+The core module with all multi-tenant infrastructure.
+This is the only dependency you need for most setups.
+
+`axon-multitenancy-axon-server`::
+Adds dynamic tenant discovery from Axon Server contexts.
+Include this when your tenants correspond to Axon Server contexts and you want tenants added or removed at runtime.
+
+== Guide overview
+
+[cols="<,<"]
+|===
+|Section |Purpose
+
+|xref:getting-started.adoc[Getting started]
+|Step-by-step guide to adding multi-tenancy to an existing application
+
+|xref:event-processors.adoc[Event processors]
+|Configure multi-tenant event processors and persistent token stores
+
+|xref:tenant-components.adoc[Tenant-scoped components]
+|Create and inject per-tenant services, repositories, and other dependencies into handlers
+
+|xref:axon-server.adoc[Axon Server integration]
+|Dynamic tenant discovery, context filtering, and runtime tenant lifecycle
+|===

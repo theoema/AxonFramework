@@ -60,6 +60,20 @@
         </dependency>
 
         <dependency>
+            <groupId>org.axonframework.extensions.multitenancy</groupId>
+            <artifactId>axon-multitenancy</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.axonframework.extensions.multitenancy</groupId>
+            <artifactId>axon-multitenancy-axon-server</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
             <groupId>org.jobrunr</groupId>
             <artifactId>jobrunr</artifactId>
             <optional>true</optional>
@@ -256,6 +270,18 @@
             <groupId>com.lmax</groupId>
             <artifactId>disruptor</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.r2dbc</groupId>
+            <artifactId>r2dbc-spi</artifactId>
+            <version>1.0.0.RELEASE</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-r2dbc</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <dependency>

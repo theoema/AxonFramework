@@ -63,6 +63,13 @@
             <scope>test</scope>
         </dependency>
 
+        <dependency>
+            <groupId>org.axonframework.extensions.multitenancy</groupId>
+            <artifactId>axon-multitenancy</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Serialization -->
         <dependency>
             <groupId>tools.jackson.core</groupId>
