@@ -1,0 +1,194 @@
+= Event Processors
+:navtitle: Event processors
+
+In a multi-tenant application, each tenant needs its own event processor reading from its own event stream.
+The extension creates per-tenant `PooledStreamingEventProcessor` instances, each with dedicated threads, a separate token store, and an isolated event source.
+
+Your event handling components are shared across all tenants, but each tenant's processor runs independently.
+Per-tenant processors are named `<processorName>[<tenantId>]`, making them easy to identify in logs and monitoring.
+
+== Configuring processors
+
+[tabs]
+====
+Configuration API::
++
+--
+Use `MultiTenantEventProcessorModule.pooledStreaming()` and register it through the event processing configuration.
+The API mirrors `EventProcessorModule.pooledStreaming()` from the core framework:
+
+[source,java]
+----
+import org.axonframework.extension.multitenancy.messaging.eventhandling.processing.MultiTenantEventProcessorModule;
+import org.axonframework.eventsourcing.configuration.EventSourcingConfigurer;
+
+class MultiTenancyConfig {
+
+    void configureProcessors(EventSourcingConfigurer configurer) {
+        configurer.messaging(m -> m.eventProcessing(ep -> ep
+                .pooledStreaming(ps -> ps.processor(
+                        MultiTenantEventProcessorModule
+                                .pooledStreaming("order-processor")
+                                .eventHandlingComponents(c -> c
+                                        .autodetected("orders", cfg -> new OrderProjection()))
+                                .customized((cfg, config) -> config
+                                        .initialSegmentCount(4)
+                                        .batchSize(100))
+                ))
+        ));
+    }
+}
+----
+
+Use `notCustomized()` instead of `customized()` when you do not need to change processor settings.
+--
+
+Spring Boot::
++
+--
+The auto-configuration automatically makes all pooled streaming processors multi-tenant when the extension is active.
+Event handling components are auto-detected as usual, and no additional configuration is required.
+
+If you need to customize processor settings, you can use `EventProcessorDefinition` beans or application properties just as you would without multi-tenancy:
+
+[source,java]
+----
+@Bean
+public EventProcessorDefinition orderProcessor() {
+    return EventProcessorDefinition.pooledStreaming("order-processor")
+            .assigningHandlers(EventHandlerSelector.matchesNamespaceOnType("orders"))
+            .customized(config -> config
+                    .initialSegmentCount(4)
+                    .batchSize(100));
+}
+----
+
+[source,properties]
+----
+axon.eventhandling.processors.order-processor.mode=pooled-streaming
+axon.eventhandling.processors.order-processor.initial-segment-count=4
+axon.eventhandling.processors.order-processor.batch-size=100
+----
+--
+====
+
+[NOTE]
+====
+Only pooled streaming processors are affected by multi-tenancy.
+Subscribing processors are created as standard single-instance processors since they subscribe to the event bus rather than streaming from an event store.
+====
+
+== Token stores
+
+In the core framework, you configure a single `TokenStore` for your application.
+With multi-tenancy, each tenant needs its own token store to track processing progress independently.
+The extension provides `TenantTokenStoreFactory` implementations for JDBC and JPA that create and cache a separate `TokenStore` per tenant.
+
+By default, the extension uses in-memory token stores, which is fine for development but means processing progress is lost on restart.
+
+=== JDBC token store
+
+`JdbcTenantTokenStoreFactory` is a lightweight option that persists tokens using a plain `DataSource` per tenant.
+You provide a function that returns the data source for each tenant, typically by looking up the tenant's database connection details:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.componentRegistry(cr ->
+        cr.registerComponent(
+                TenantTokenStoreFactory.class,
+                config -> new JdbcTenantTokenStoreFactory(
+                        tenant -> createDataSource(
+                                "jdbc:postgresql://localhost:5432/" + tenant.tenantId()
+                        ),
+                        config.getComponent(Converter.class)
+                )
+        )
+);
+----
+--
+
+Spring Boot::
++
+--
+[source,java]
+----
+@Bean
+TenantTokenStoreFactory tenantTokenStoreFactory(Converter converter) {
+    return new JdbcTenantTokenStoreFactory(
+            tenant -> createDataSource(
+                    "jdbc:postgresql://localhost:5432/" + tenant.tenantId()
+            ),
+            converter
+    );
+}
+----
+
+How you create the `DataSource` is up to you (connection pool like HikariCP, Spring's `DataSourceBuilder`, or any other mechanism).
+--
+====
+
+You can optionally pass a `JdbcTokenStoreConfiguration` as a third constructor argument to customize table names and column mappings.
+
+=== JPA token store
+
+`JpaTenantTokenStoreFactory` persists tokens using Jakarta Persistence (`EntityManagerFactory`) per tenant:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.componentRegistry(cr ->
+        cr.registerComponent(
+                TenantTokenStoreFactory.class,
+                config -> new JpaTenantTokenStoreFactory(
+                        tenant -> getEntityManagerFactoryForTenant(tenant),
+                        config.getComponent(Converter.class)
+                )
+        )
+);
+----
+--
+
+Spring Boot::
++
+--
+[source,java]
+----
+@Bean
+TenantTokenStoreFactory tenantTokenStoreFactory(Converter converter) {
+    return new JpaTenantTokenStoreFactory(
+            tenant -> getEntityManagerFactoryForTenant(tenant),
+            converter
+    );
+}
+----
+--
+====
+
+[WARNING]
+.An `EntityManagerFactory` is a heavyweight object on the JVM
+====
+In a standard Axon application with a single `EntityManagerFactory`, JPA works great.
+In a multi-tenant setup however, each tenant gets its own instance with connection pools, second-level caches, and entity metadata, which adds up quickly.
+For high-tenant-count or performance intensive applications, prefer the JDBC token store above.
+====
+
+=== Custom token store
+
+`TenantTokenStoreFactory` is a functional interface, so you can provide your own implementation for other storage backends.
+
+== Dynamic tenant registration
+
+When a `TenantProvider` is configured, multi-tenant event processors subscribe to tenant changes.
+When a new tenant is added at runtime, a new per-tenant processor is created and starts reading from the beginning of the tenant's event stream.
+
+This works out of the box with xref:axon-server.adoc[`AxonServerTenantProvider`] or by calling `SimpleTenantProvider.addTenant()` programmatically.
+When a tenant is removed, its processor is shut down and cleaned up.

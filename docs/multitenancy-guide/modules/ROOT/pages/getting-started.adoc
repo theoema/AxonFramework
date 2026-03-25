@@ -1,0 +1,284 @@
+= Getting Started
+:navtitle: Getting started
+
+This guide walks through adding multi-tenancy to an existing Axon Framework application.
+We will use a university course management application as our starting point: it has command handlers that create courses, event handlers that build read models, and a REST API that dispatches commands.
+
+By the end of this page, the same application will serve multiple universities (tenants) from a single deployment, with fully isolated data.
+
+== Step 1: Add the dependency
+
+[tabs]
+====
+Maven::
++
+--
+[source,xml]
+----
+<dependency>
+    <groupId>org.axonframework.extensions.multitenancy</groupId>
+    <artifactId>axon-multitenancy</artifactId>
+    <version>${axon.version}</version>
+</dependency>
+----
+--
+
+Gradle::
++
+--
+[source,groovy]
+----
+implementation 'org.axonframework.extensions.multitenancy:axon-multitenancy:${axonVersion}'
+----
+--
+====
+
+Nothing changes in your application yet.
+The extension activates only when you register a tenant provider and resolver (next steps).
+
+== Step 2: Define your tenants
+
+You need to tell the framework which tenants exist.
+For our university application, each tenant is a university:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.componentRegistry(cr ->
+        cr.registerComponent(TenantProvider.class, config ->
+                new SimpleTenantProvider(List.of(
+                        new TenantDescriptor("mit", Map.of("region", "us-east-1")),
+                        new TenantDescriptor("oxford", Map.of("region", "eu-west-1"))
+                ))
+        )
+);
+----
+--
+
+Spring Boot::
++
+--
+[source,java]
+----
+@Bean
+TenantProvider tenantProvider() {
+    return new SimpleTenantProvider(List.of(
+            new TenantDescriptor("mit", Map.of("region", "us-east-1")),
+            new TenantDescriptor("oxford", Map.of("region", "eu-west-1"))
+    ));
+}
+----
+--
+====
+
+`SimpleTenantProvider` accepts an initial list of tenants.
+Tenants can also be added at runtime with `addTenant()`, and for dynamic discovery from Axon Server, see xref:axon-server.adoc[].
+
+A `TenantDescriptor` is more than just an ID.
+It carries an optional property map for non-sensitive tenant metadata like region or locale.
+These properties are accessible via `tenant.properties()` anywhere a `TenantDescriptor` is available.
+
+== Step 3: Define how to resolve the tenant from a message
+
+The framework needs to know which tenant each message belongs to.
+You provide a `TenantResolver` that extracts this from the message.
+
+The extension ships with `MetadataBasedTenantResolver`, which reads the tenant from a metadata key (default `"tenantId"`).
+This is the recommended approach since it keeps tenant routing separate from your domain and works uniformly across all message types:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.componentRegistry(cr ->
+        cr.registerDecorator(
+                TenantResolverRegistry.class, 0,
+                (config, name, delegate) ->
+                        delegate.registerResolver(c -> new MetadataBasedTenantResolver())
+        )
+);
+----
+--
+
+Spring Boot::
++
+--
+[source,java]
+----
+@Bean
+TenantResolver<Message> tenantResolver() {
+    return new MetadataBasedTenantResolver();
+}
+----
+--
+====
+
+If your metadata uses a different key, pass it to the constructor:
+
+[source,java]
+----
+new MetadataBasedTenantResolver("myTenantKey")
+----
+
+`TenantResolver` is a functional interface, so you can provide your own implementation if the metadata-based approach does not fit your needs.
+
+With these two components in place, the framework automatically replaces standard buses and stores with multi-tenant variants.
+Your existing command handlers, event handlers, and query handlers continue to work unchanged.
+
+== Step 4: Propagate the tenant ID across messages
+
+When a message handler produces new messages (for example, a command handler publishing events, or an event handler dispatching commands), the `tenantId` needs to flow from the originating message to any messages it creates.
+This is handled by registering a correlation data provider:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.messaging(m -> m.registerCorrelationDataProvider(
+        config -> new SimpleCorrelationDataProvider("tenantId")
+));
+----
+--
+
+Spring Boot::
++
+--
+[source,java]
+----
+@Bean
+CorrelationDataProvider tenantCorrelationDataProvider() {
+    return new SimpleCorrelationDataProvider("tenantId");
+}
+----
+--
+====
+
+This ensures that when a command handler publishes events, those events inherit the `tenantId` from the command.
+Similarly, if an event handler dispatches a new command or publishes further events, the tenant context is preserved throughout the entire message chain.
+
+[IMPORTANT]
+====
+Without correlation data propagation, downstream messages will not carry the `tenantId` in their metadata.
+If your `TenantResolver` reads from metadata, this means the multi-tenant infrastructure will not be able to route those messages to the correct tenant.
+====
+
+== Step 5: Attach the tenant ID to outgoing messages
+
+The `MetadataBasedTenantResolver` from step 3 expects every message to carry a `tenantId` metadata field.
+This applies to all message types: commands, queries, and any events published directly via the event gateway.
+
+The smoothest way is to register a dispatch interceptor that attaches the tenant ID to every outgoing message.
+The interceptor needs to know how to access the current tenant's identifier, for example from a HTTP header, a JWT claim, a request-scoped attribute, or any other mechanism your application uses:
+
+[tabs]
+====
+Configuration API::
++
+--
+[source,java]
+----
+configurer.registerDispatchInterceptor(config ->
+        (message, ctx) -> message.andMetadata(
+                Map.of("tenantId", resolveCurrentTenantId())
+        )
+);
+----
+
+`registerDispatchInterceptor` applies to all message types (commands, queries, and events), so a single registration covers everything.
+--
+
+Spring Boot::
++
+--
+Declare a `MessageDispatchInterceptor` bean.
+A bean typed as `MessageDispatchInterceptor<Message>` is auto-discovered and applied to all message types:
+
+[source,java]
+----
+@Bean
+MessageDispatchInterceptor<Message> tenantInterceptor() {
+    return (message, ctx) -> message.andMetadata(
+            Map.of("tenantId", resolveCurrentTenantId())
+    );
+}
+----
+--
+====
+
+With this interceptor in place, your existing dispatching code does not need to change at all:
+
+[source,java]
+----
+// No change needed - the interceptor adds tenantId automatically
+commandGateway.send(new CreateCourse(courseId, "Event Sourcing 101", 25));
+queryGateway.query(new FindAllCourses(), FindAllCourses.Result.class);
+----
+
+== Step 6: Make event processors multi-tenant
+
+Each tenant needs its own event processor with a dedicated event stream and token store.
+
+[tabs]
+====
+Configuration API::
++
+--
+Replace `EventProcessorModule.pooledStreaming()` with `MultiTenantEventProcessorModule.pooledStreaming()` in your processor configuration:
+
+[source,java]
+----
+// Before: single-tenant
+EventProcessorModule.pooledStreaming("courses-processor")
+
+// After: multi-tenant
+MultiTenantEventProcessorModule.pooledStreaming("courses-processor")
+----
+
+Everything else in the processor configuration stays the same.
+--
+
+Spring Boot::
++
+--
+No change needed.
+The auto-configuration automatically creates multi-tenant processors when the extension is active.
+Your existing `EventProcessorDefinition` beans and application properties work as before.
+--
+====
+
+For more details on processor configuration and customization, see xref:event-processors.adoc[].
+
+== Step 7: Configure a per-tenant token store
+
+In a single-tenant application, you register one `TokenStore` for the entire app.
+With multi-tenancy, each tenant needs its own token store to track processing progress independently.
+
+Replace your `TokenStore` bean with a `TenantTokenStoreFactory`.
+For getting started, the in-memory default works out of the box with no configuration.
+For production deployments with JDBC or JPA token stores, see xref:event-processors.adoc#_token_stores[Token stores].
+
+[NOTE]
+====
+Your command handlers, event handlers, and projections do not change.
+The `CoursesStatsProjector` that handles `CourseCreated` events continues to work exactly as before.
+It receives only the events for its tenant, because each tenant has its own event processor reading from its own event stream.
+====
+
+== Next steps
+
+At this point you have a working multi-tenant application with in-memory storage.
+For production use, you will want to:
+
+* xref:event-processors.adoc#_token_stores[Choose a persistent token store] for event processors
+* xref:tenant-components.adoc[Inject per-tenant services] into your handlers
+* xref:axon-server.adoc[Use Axon Server] for dynamic tenant discovery

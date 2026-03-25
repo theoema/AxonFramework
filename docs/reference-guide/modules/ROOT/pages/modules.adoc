@@ -93,6 +93,7 @@ These extensions are part of the main Axon Framework repository and provide esse
 |<<Micrometer metrics>>            |`axon-metrics-micrometer`         |`org.axonframework.extensions.metrics`  |https://central.sonatype.com/search?q=a:axon-metrics-micrometer[available]
 |<<Axon Tracing OpenTelemetry>>         |`axon-tracing-opentelemetry`      |`org.axonframework.extensions.tracing`  |https://central.sonatype.com/search?q=a:axon-tracing-opentelemetry[available]
 |<<Axon Reactor>>                       |`axon-reactor`                    |`org.axonframework.extensions.reactor`  |https://central.sonatype.com/search?q=a:axon-reactor[available]
+|<<Axon Multi-Tenancy>>                 |`axon-multitenancy`               |`org.axonframework.extensions.multitenancy` |https://central.sonatype.com/search?q=a:axon-multitenancy[available]
 |===
 
 ==== Axon Spring
@@ -155,6 +156,49 @@ Gradle::
 [source,groovy]
 ----
 implementation 'org.axonframework.extensions.reactor:axon-reactor:${axonVersion}'
+----
+--
+====
+
+[[axon-multitenancy]]
+==== Axon Multi-Tenancy
+
+This extension enables Axon Framework applications to serve multiple tenants from a single deployment.
+Each tenant gets fully isolated infrastructure — its own command bus, query bus, event store, snapshot store, and event processors — while sharing the same application code.
+
+The extension automatically replaces standard buses and stores with multi-tenant variants when a `TenantResolver` is registered via the `TenantResolverRegistry`.
+Each incoming message is routed to the correct tenant's infrastructure based on message metadata.
+
+For event processing, per-tenant `PooledStreamingEventProcessor` instances are created, each with a dedicated event source, token store, and thread pools.
+In Spring Boot, the auto-configuration handles all wiring — you only need to provide `TenantProvider` and `TenantResolver` beans.
+
+An optional Axon Server module (`axon-multitenancy-axon-server`) provides dynamic tenant discovery from Axon Server contexts, including runtime addition and removal of tenants.
+
+For a complete setup guide, see the xref:multitenancy-guide::index.adoc[Multi-Tenancy guide].
+
+To add the extension to your project:
+
+[tabs]
+====
+Maven::
++
+--
+[source,xml]
+----
+<dependency>
+    <groupId>org.axonframework.extensions.multitenancy</groupId>
+    <artifactId>axon-multitenancy</artifactId>
+    <version>${axon.version}</version>
+</dependency>
+----
+--
+
+Gradle::
++
+--
+[source,groovy]
+----
+implementation 'org.axonframework.extensions.multitenancy:axon-multitenancy:${axonVersion}'
 ----
 --
 ====

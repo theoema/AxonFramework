@@ -86,6 +86,7 @@ If Axon Server is not available or disabled, Axon will use JPA-based implementat
 Other extensions can provide additional implementations:
 * PostgreSQL event store (via the PostgreSQL extension)
 * Reactive gateways for commands, events, and queries (via the xref:modules.adoc#axon-reactor[Reactor extension])
+* Multi-tenant infrastructure with per-tenant isolation of buses, stores, and event processors (via the xref:modules.adoc#axon-multitenancy[Multi-Tenancy extension])
 
 == Component detection
 
